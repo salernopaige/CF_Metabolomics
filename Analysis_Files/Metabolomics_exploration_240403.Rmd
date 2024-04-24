@@ -1,0 +1,286 @@
+---
+title: "Metabolomics Figures 4/3/24"
+output: html_notebook
+---
+
+```{r}
+library(tidyverse)
+library(readxl)
+library(ggpubr)
+```
+
+```{r}
+metadata <- read.csv("metabolomics_metadata_230620.csv", stringsAsFactors = F)
+metaphlan <- read.csv("metaphlan_raw_230620.csv", stringsAsFactors = F)
+metaphlan$clade <- gsub(".*s__", "", metaphlan$clade)
+metaphlan_transpose <- as.data.frame(t(metaphlan), stringsAsFactors = F)
+metaphlan_transpose$clade <- rownames(metaphlan_transpose)
+colnames(metaphlan_transpose) <- metaphlan_transpose[1,]
+metaphlan_transpose <- metaphlan_transpose[-1,]
+metaphlan_transpose$clade <- gsub("\\.", "-", metaphlan_transpose$clade)
+colnames(metaphlan_transpose)[ncol(metaphlan_transpose)] <- "Sample"
+
+metaphlan_merge <- merge(metadata[c(1,3,9)], metaphlan_transpose, by = "Sample")
+metaphlan_merge[4:ncol(metaphlan_merge)] <- lapply(metaphlan_merge[4:ncol(metaphlan_merge)], function(x) as.numeric(as.character(x)))
+metaphlan_merge$Age <- as.character(metaphlan_merge$Age)
+dim(metaphlan_merge)
+metaphlan_merge <- metaphlan_merge[metaphlan_merge[,1] != "B266-M12",]
+metaphlan_merge[is.na(metaphlan_merge)] <- 1e-6
+
+
+
+
+
+metabolomics <- read_excel("Metabolomics_raw_230227.xlsx")
+metabolomics$Age <- gsub("M", "", metabolomics$sample.month)
+metabolomics_sub <- subset(metabolomics, select = c(1,15,5:14))
+metabolomics_sub[4:12] <- lapply(metabolomics_sub[4:12], function(x) as.numeric(as.character(x)))
+metabolomics_sub[is.na(metabolomics_sub)] <- 1e-6
+dim(metabolomics_sub)
+metabolomics_melt <- pivot_longer(metabolomics_sub, cols = c(-Sample,-Age,-sample.type), values_to = "Value", names_to = "Metabolite")
+metabolomics_melt$Value <- as.numeric(metabolomics_melt$Value)
+metabolomics_melt <- na.omit(metabolomics_melt)
+
+anti_join(metaphlan_merge[1], metabolomics_sub[1])
+
+
+
+data_summary <- metabolomics_melt %>%
+  group_by(Age, sample.type, Metabolite) %>%
+  summarise(
+    mean = mean(Value),
+    se = sd(Value) / sqrt(n()),
+    .groups = 'drop'
+  )
+
+
+stats_results <- list()
+
+ages <- unique(metabolomics_melt$Age)
+metabolites <- unique(metabolomics_melt$Metabolite)
+
+simple_stats <- for(metabolite in metabolites) {
+  for (age in ages) {
+    cf_values <- metabolomics_melt %>%
+      filter(Metabolite == metabolite, Age == age, sample.type == "CF") %>%
+      pull(Value)
+    control_values <- metabolomics_melt %>%
+      filter(Metabolite == metabolite, Age == age, sample.type == "Control") %>%
+      pull(Value)
+    test <- t.test(cf_values, control_values)
+    
+    stats_results[[paste(metabolite, age, sep = "_")]] <- test$p.value
+  }
+}
+
+```
+
+```{r}
+pcoa_generation <- function(df){
+  library(vegan)
+  df_hellinger <- decostand(df[, -c(1:3)], method = "hellinger")
+  df_dist <- vegdist(df_hellinger, method = "bray")
+  df_pcoa <- cmdscale(df_dist, k = min(nrow(df_hellinger)-1, ncol(df_hellinger)))
+  return(df_pcoa)
+}
+
+rda_analysis <- function(df){
+  library(vegan)
+  raw <- df[4:ncol(df)]
+  rda_res <- rda(raw ~ df$Age + df$sample.type)
+  return(rda_res)
+}
+
+df_plot_procrustes <- function(pcoa_df1, pcoa_df2){
+  library(vegan)
+  procrustes_res <- procrustes(pcoa_df1, pcoa_df2)
+  aligned_metabolite_coords <- procrustes_res$X  # Transformed coordinates of the first matrix
+  aligned_microbiome_coords <- procrustes_res$Yrot  # Transformed coordinates of the second matrix
+
+  # Creating a data frame for ggplot
+  df_plot <- data.frame(X = c(aligned_metabolite_coords[,1], aligned_microbiome_coords[,1]),
+                        Y = c(aligned_metabolite_coords[,2], aligned_microbiome_coords[,2]),
+                        Dataset = factor(rep(c("Metabolite", "Microbiome"), each =
+                                               nrow(aligned_metabolite_coords))))
+  return(df_plot)
+}
+
+run_protest <- function(pcoa_df1, pcoa_df2){
+  library(vegan)
+  pro_res <- protest(metabolomics_pcoa, metaphlan_pcoa, permutations = 9999)
+  return(pro_res)
+}
+
+colors = c("#000080", "#FFC40C")
+
+plot_procrustes <- function(procrustes_res, protest_res, color_list){
+  library(ggplot2)
+  p <- ggplot(procrustes_res, aes(x = X, y = Y, color = Dataset)) +
+  geom_point(alpha = 0.6) +
+  scale_color_manual(values = color_list) +
+  theme_minimal() +
+  labs(title = "Procrustes Analysis Results", x = "PCoA 1", y = "PCoA 2") +
+  annotate("text", x = Inf, y = Inf, label = paste("Procrustes SS:",
+                                                   round(summary(protest_res)$ss, 4), 
+                                                   "\nRMSE:", 
+                                                   round(summary(protest_res)$rmse, 4), 
+                                                   "\nP-value:", 
+                                                   round(protest_res$signif, 4)), 
+           hjust = 1.1, vjust = 2, size = 3.5)
+  return(p)
+}
+```
+
+## Run all data together
+```{r}
+metabolite_pcoa <- pcoa_generation(metabolomics_sub)
+microbiome_pcoa <- pcoa_generation(metaphlan_merge)
+
+metabolite_rda <- rda_analysis(metabolomics_sub)
+microbiome_rda <- rda_analysis(metaphlan_merge)
+
+procrustes_df <- df_plot_procrustes(metabolite_rda, microbiome_rda)
+protest_df <- run_protest(metabolite_rda, microbiome_rda)
+
+colors = c("#000080", "#FFC40C")
+plot <- plot_procrustes(procrustes_df, protest_df, colors)
+plot
+```
+
+## Run just CF
+```{r}
+metabolomics_cf <- metabolomics_sub %>%
+  filter(sample.type == "CF")
+metaphlan_cf <- metaphlan_merge %>%
+  filter(sample.type == "CF")
+
+metabolite_pcoa <- pcoa_generation(metabolomics_cf)
+microbiome_pcoa <- pcoa_generation(metaphlan_cf)
+
+procrustes_df <- df_plot_procrustes(metabolite_pcoa, microbiome_pcoa)
+protest_df <- run_protest(metabolite_pcoa, microbiome_poca)
+
+colors = c("#000080", "#FFC40C")
+plot <- plot_procrustes(procrustes_df, protest_df, colors)
+plot
+```
+
+## Run just Healthy
+```{r}
+metabolomics_control <- metabolomics_sub %>%
+  filter(sample.type == "Control")
+metaphlan_control <- metaphlan_merge %>%
+  filter(sample.type == "Control")
+
+metabolite_pcoa <- pcoa_generation(metabolomics_control)
+microbiome_pcoa <- pcoa_generation(metaphlan_control)
+
+procrustes_df <- df_plot_procrustes(metabolite_pcoa, microbiome_pcoa)
+protest_df <- run_protest(metabolite_pcoa, microbiome_poca)
+
+colors = c("#000080", "#FFC40C")
+plot <- plot_procrustes(procrustes_df, protest_df, colors)
+plot
+```
+
+## Run with only Age Model Species
+```{r}
+age_model <- c("Faecalibacterium_prausnitzii",
+               "Ruthenibacterium_lactiformans",
+               "Eubacterium_hallii",
+               "Eubacterium_rectale",
+               "Anaerostipes_hadrus",
+               "Coprococcus_catus",
+               "Monoglobus_pectinilyticus",
+               "Alistipes_putredinis",
+               "Dialister_invisus",
+               "Agathobaculum_butyriciproducens",
+               "Blautia_wexlerae",
+               "Clostridium_innocuum",
+               "Actinomyces_oris",
+               "Alistipes_finegoldii",
+               "Eubacterium_eligens",
+               "Escherichia_coli",
+               "Ruminococcus_bromii",
+               "Odoribacter_splanchnicus",
+               "Erysipelatoclostridium_ramosum",
+               "Clostridium_leptum",
+               "Eisenbergiella_massiliensis",
+               "Ruminococcus_gnavus",
+               "Bacteroides_massiliensis",
+               "Alistipes_shahii",
+               "Bifidobacterium_breve")
+metaphlan_age_model <- metaphlan_merge %>%
+  select(1:3,  one_of(age_model)) %>%
+  filter(sample.type == "Control")
+
+metabolomics_control <- metabolomics_sub %>%
+  filter(sample.type == "Control")
+
+metabolite_pcoa <- pcoa_generation(metabolomics_control)
+microbiome_pcoa <- pcoa_generation(metaphlan_age_model)
+
+procrustes_df <- df_plot_procrustes(metabolite_pcoa, microbiome_pcoa)
+protest_df <- run_protest(metabolite_pcoa, microbiome_poca)
+
+colors = c("#000080", "#FFC40C")
+plot <- plot_procrustes(procrustes_df, protest_df, colors)
+plot
+```
+## Run for oral microbes
+```{r}
+oral_genera <- c("Actinomyces", 
+                   "Leptotrichia", 
+                   "Campylobacter",
+                   "Fusobacterium", 
+                   "Neisseria", 
+                   "Corynebacterium", 
+                   "Rothia", 
+                   "Treponema", 
+                   "Veillonella", 
+                   "Prevotella",
+                   "Streptococcus", 
+                   "Capnocytophaga", 
+                   "Haemophilus")
+
+metaphlan <- read.csv("metaphlan_raw_230620.csv", stringsAsFactors = F)
+metaphlan$clade <- gsub(".*g__", "", metaphlan$clade)
+metaphlan$clade <- gsub("\\|s__.*", "", metaphlan$clade)
+metaphlan <- metaphlan %>%
+  filter(clade %in% oral_genera) 
+collapsed <- aggregate(. ~ clade, data = metaphlan, sum)
+
+metaphlan_transpose <- as.data.frame(t(collapsed), stringsAsFactors = F)
+metaphlan_transpose$clade <- rownames(metaphlan_transpose)
+colnames(metaphlan_transpose) <- metaphlan_transpose[1,]
+metaphlan_transpose <- metaphlan_transpose[-1,]
+metaphlan_transpose$clade <- gsub("\\.", "-", metaphlan_transpose$clade)
+colnames(metaphlan_transpose)[ncol(metaphlan_transpose)] <- "Sample"
+
+metaphlan_merge <- merge(metadata[c(1,3,9)], metaphlan_transpose, by = "Sample")
+metaphlan_merge[4:ncol(metaphlan_merge)] <- lapply(metaphlan_merge[4:ncol(metaphlan_merge)], function(x) as.numeric(as.character(x)))
+metaphlan_merge$Age <- as.character(metaphlan_merge$Age)
+dim(metaphlan_merge)
+metaphlan_merge <- metaphlan_merge[metaphlan_merge[,1] != "B266-M12",]
+metaphlan_merge[is.na(metaphlan_merge)] <- 1e-6
+
+metaphlan_oral <- metaphlan_merge %>%
+  filter(sample.type == "CF")
+
+metabolomics_control <- metabolomics_sub %>%
+  filter(sample.type == "CF")
+
+metabolite_pcoa <- pcoa_generation(metabolomics_sub)
+microbiome_pcoa <- pcoa_generation(metaphlan_merge)
+
+procrustes_df <- df_plot_procrustes(metabolite_pcoa, microbiome_pcoa)
+protest_df <- run_protest(metabolite_pcoa, microbiome_poca)
+
+colors = c("#000080", "#FFC40C")
+plot <- plot_procrustes(procrustes_df, protest_df, colors)
+plot
+
+ggsave("procrustes_oral_240404.pdf", plot, width = 6, height = 4)
+
+```
+
