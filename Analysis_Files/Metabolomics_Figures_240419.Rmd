@@ -8,8 +8,8 @@ library(tidyverse)
 library(readxl)
 library(ggpubr)
 
-raw <- read_excel("../Metabolomics/Metabolomics_raw_230227.xlsx")
-metadata <- read.csv("../Metabolomics/metabolomics_metadata_230620.csv", stringsAsFactors = F)
+raw <- read_excel("../Raw_Data_Files/Metabolomics_raw_230227.xlsx")
+metadata <- read.csv("../Raw_Data_Files/metabolomics_metadata_230620.csv", stringsAsFactors = F)
 colnames(raw)
 colnames(metadata)
 merged <- merge(raw, metadata, by = c("Sample",
@@ -47,7 +47,7 @@ metabolite_plot <- ggplot(melted, aes(sample.type, Value)) +
 
 metabolite_plot
 
-ggsave("metabolomics_by_age_240423.pdf", metabolite_plot, width = 10, height = 15)
+# ggsave("metabolomics_by_age_240423.pdf", metabolite_plot, width = 10, height = 15)
 
 library(ggsignif)
 signif_annotations <- list(
@@ -83,7 +83,27 @@ stat_compare_means(method = "wilcox.test",
 
 metabolite_plot
 
-ggsave("metabolomics_by_disease_state_240423.pdf", metabolite_plot, width = 10, height = 15)
+# ggsave("metabolomics_by_disease_state_240423.pdf", metabolite_plot, width = 10, height = 15)
 
 ```
+
+```{r}
+means <- melted[2:5]
+means_all <- means %>%
+  group_by(Age, sample.type, Metabolite) %>%
+  summarize(Mean = mean(Value))
+
+min_all <- means %>%
+  group_by(Age, sample.type, Metabolite) %>%
+  summarize(Min = min(Value))
+
+max_all <- means %>%
+  group_by(Age, sample.type, Metabolite) %>%
+  summarize(Max = max(Value))
+
+All <- merge(means_all, merge(min_all, max_all))
+
+write.csv(All, "../Tables/Metabolite_Mean_Values_240507.csv", row.names = F)
+```
+
 
